@@ -56,11 +56,32 @@ referrals, both burn paths, expiry, reveal, refund, selling and sweeping are rea
 is modeled; forced ETH transfers are outside this exact-liability equality. Refund eligibility is
 controlled by the local Dice transport, not a claim about the live provider's refund delay.
 
-## Unresolved defect
+## Revision: the UNKNOWN_REIGN marker (finding 5643a8ad)
 
-The independent large-board proof found that above 1,500 players a stale leader cache can award
-68,400 seconds of reign and the 8% King prize to a one-point player, while the true 90-point leader
-is correctly ranked #1 at settlement. The failing proof and full inputs are in `.imd-findings.json`.
-It was executed under `test/scratch/`; its source is delivered through the findings report, not as an
-assertion blessing the incorrect behavior. The six-actor invariant campaign does not cover that
-large-board branch. Production code was not modified.
+The large-board King finding from the previous round was fixed by parking the reign on `address(1)`
+whenever the cached leader of a round with more than 1,500 players is debited, and crediting the
+marker's seconds to the round's final #1 at settlement. `SherwoodV2UnknownReign.t.sol` covers that
+revision on real 1,501-player boards and on a 13-player board for the deferred Dice rescan:
+
+- the marker takes the reign on the first debit of the cached leader, no real player accumulates
+  seconds off the stale cache, the cache keeps moving to credited players, and the marker's running
+  reign is capped at the round's end with no overlap;
+- the marker's seconds crown the final #1 only on the settlement batch that reaches the end of the
+  board, a longer real reign still beats them, a round with nobody above zero gets no prize, and
+  `address(1)` can never claim anything;
+- Robin Hood while #1 is unknown scores the buy, moves nothing and spends no charge (by the player and
+  by the stale cached leader), while a 1,500-player board is still rescanned in place;
+- a lost flip by #1 on 13 players defers the rescan to the marker, the next play rescans, an expired
+  flip leaves no marker, and the marker does not leak into the next round.
+
+Times in that file are derived from `GENESIS`, never from a cached `block.timestamp`: under via-IR
+the compiler re-reads the opcode at each use, so a cached value moves with every `vm.warp`.
+
+## Reported, not asserted
+
+The marker credits every unknown second to whoever is #1 at the end, so on a big board a player who
+takes #1 in the last minutes is crowned King over the player who actually held #1 for most of the
+round. The failing proof (1,501 players, 18 hours versus 1 hour) and three smaller findings (Robin
+Hood silently disabled for the rest of a big round, `settle` with `type(uint256).max` panicking after
+a partial batch, and views that exclude the marker's seconds) are in `.imd-findings.json`. The
+six-actor invariant campaign never reaches the big-board branch. Production code was not modified.
