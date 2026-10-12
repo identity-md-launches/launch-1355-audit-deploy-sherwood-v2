@@ -1,0 +1,19 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "SherwoodV2Launcher",
+      "constructorArgs": [
+        "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+        "0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127",
+        "0xa934ba4f59070149d37a93f8a002af79bae35563",
+        "100000000000000000000000",
+        "0xd8a0680e7699526b57140ed4eafdcc7219dc0a0c",
+        "0x8741b8a825644d9ef18faf2dab5e9b47b900f2b6",
+        "$owner",
+        "1791835200"
+      ]
+    }
+  ],
+  "notes": "Sherwood v2 on Robinhood Chain (4663) for the existing $IMD token; no new token, pool or distributor. One contract is deployed: src/SherwoodV2Launcher.sol:SherwoodV2Launcher. Its constructor mines, onchain, the first CREATE2 salt whose address carries the Uniswap v4 hook permission flags 0x20CC in its low 14 bits, then deploys src/SherwoodV2.sol:SherwoodV2 with CREATE2 from the launcher (about 10M gas in total; rehearsed on a fork in test/SherwoodV2LauncherFork.t.sol). The hook address is launcher.hook() and the salt used is launcher.salt(). Neither constructor calls another contract, so the empty-chain rehearsal passes. Constructor arguments, in declaration order: poolManager (Uniswap v4 PoolManager on Robinhood Chain) 0x8366a39cc670b4001a1121b8f6a443a643e40951; token ($IMD) 0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127; host ($PFWA) 0xa934ba4f59070149d37a93f8a002af79bae35563; hostHolderMin 100000 PFWA in wei (100000000000000000000000) for the holder bonus; dice (Dice Protocol entropy) 0xd8a0680e7699526b57140ed4eafdcc7219dc0a0c; diceProvider 0x8741b8a825644d9ef18faf2dab5e9b47b900f2b6; owner = $owner (0x420944b441715e34dd672ae0eb4526a7ad7d1eef), who also starts as operator; genesis 1791835200 (unix time of round 0's start, rounds roll every 20 hours from it). The hook runs the Sherwood leaderboard game on one native-ETH/$IMD pool: every buy scores points and pays 5% of its ETH into the round's pot; moves are Buy, Steal, Robin Hood, Flip (Dice Protocol randomness) and Shield with stacking charges. Each pot pays the top 3 40/20/10%, 8% to the King of the Hill, 10% buys back and burns $IMD through the existing ETH/$IMD 1% pool, 7% buys back and burns $PFWA through its holder pool, and 5% rolls over; prizes are claimable for 7 days and unclaimed amounts are swept into the live round's pot. The game pool is created after deployment by the owner/operator against launcher.hook(); this manifest contains no pool, token, funding or initialization step."
+}
