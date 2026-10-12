@@ -1630,6 +1630,58 @@ contract SherwoodV2Test is Test, Deployers {
         hook.fundPot{value: 1}(round);
     }
 
+    /// Review (low): a round too far ahead could never be settled, stranding its seed.
+    function test_fundPotRejectsRoundsTooFarAhead() public {
+        uint256 round = _round();
+        hook.fundPot{value: 1}(round + 365);
+        assertEq(hook.pot(round + 365), 1);
+        vm.expectRevert(SherwoodV2.RoundPassed.selector);
+        hook.fundPot{value: 1}(round + 366);
+        vm.expectRevert(SherwoodV2.RoundPassed.selector);
+        hook.fundPot{value: 1}(type(uint256).max);
+    }
+
+    /// Review (low): `settle(round, type(uint256).max)` means "all remaining" and must not overflow.
+    function test_settleAllRemainingWithMax() public {
+        uint256 round = _round();
+        _buy(alice, 0.01 ether, SherwoodV2.Move.BUY);
+        _buy(bob, 0.01 ether, SherwoodV2.Move.BUY);
+        vm.warp(_settleTime(round) + 1);
+        assertFalse(hook.settle(round, 1));
+        assertTrue(hook.settle(round, type(uint256).max));
+        (bool settled, address[3] memory top,,,,,,,) = hook.result(round);
+        assertTrue(settled);
+        assertEq(top[0], alice);
+        assertEq(top[1], bob);
+    }
+
+    /// Review (low): a referrer word that isn't a clean address is ignored; the swap never reverts over it.
+    function test_dirtyReferrerWordIsIgnoredNotAReasonToRevert() public {
+        _swapIn(gameKey, alice, 0.01 ether, abi.encode(uint256(0), bytes32(uint256(1) << 200)));
+        assertEq(hook.points(_round(), alice), 10);
+        assertEq(hook.referrerOf(alice), address(0));
+        // A clean referrer in the same slot still works.
+        _buyRef(bob, 0.01 ether, SherwoodV2.Move.BUY, carol);
+        assertEq(hook.referrerOf(bob), carol);
+    }
+
+    /// Review (low): a flip never costs the pot more than its own buy paid in. At a Dice fee above the
+    /// buy's 5% the move scores as a buy and keeps its flip charge.
+    function test_flipScoresAsBuyWhenDiceFeeExceedsTheBuysPotShare() public {
+        uint256 round = _round();
+        hook.fundPot{value: 0.01 ether}(round);
+        dice.setFee(0.0005 ether); // = MAX_DICE_FEE, so only the new bound applies
+        uint256 before = hook.pot(round);
+        _buy(alice, 0.001 ether, SherwoodV2.Move.FLIP); // pays 0.00005 ETH in; the fee would take 0.0005
+        assertEq(hook.pot(round), before + 0.00005 ether, "the pot never shrinks because of a buy");
+        assertEq(hook.points(round, alice), 1);
+        assertEq(hook.pendingFlips(round), 0);
+        assertEq(hook.flipsLeft(alice), 6);
+        // A buy whose 5% covers the fee still flips.
+        _buy(bob, 0.01 ether, SherwoodV2.Move.FLIP); // 0.0005 ETH in
+        assertEq(hook.pendingFlips(round), 1);
+    }
+
     function test_plainEthTransferLandsInCurrentPot() public {
         (bool ok,) = address(hook).call{value: 0.05 ether}("");
         assertTrue(ok);
@@ -2332,17 +2384,18 @@ contract SherwoodV2Test is Test, Deployers {
         assertEq(hook.points(0, alice), 50);
         assertEq(hook.points(0, bob), 52);
         assertEq(hook.pendingFlips(0), 0);
-        // The reign was closed at the reveal: alice keeps the 60 seconds she really held #1 and nobody
-        // is credited until the board is rescanned.
-        assertEq(hook.reignHolder(0), address(1)); // #1 unknown until the next rescan; settle() credits these seconds to the final #1
+        // The reign was closed at the reveal: alice keeps the 60 seconds she really held #1 and #1 is
+        // unknown until the board is rescanned.
+        assertEq(hook.reignHolder(0), address(1));
         assertEq(hook.reignOf(0, alice), 60);
-        // The next play rescans (bob is #1 with 52) and starts his reign from then.
+        // The next play rescans first (bob is #1 with 52). Nothing changed since the reveal, so bob has
+        // held #1 since then and his reign is credited back to it.
         vm.warp(t0 + 120);
         _buy(carol, 0.001 ether, SherwoodV2.Move.BUY);
         assertEq(hook.leader(0), bob);
         assertEq(hook.reignHolder(0), bob);
         vm.warp(t0 + 130);
-        assertEq(hook.reignOf(0, bob), 10);
+        assertEq(hook.reignOf(0, bob), 70);
         assertEq(hook.reignOf(0, alice), 60);
         // The flip is resolved: it can't be expired into a refund any more.
         vm.warp(t0 + 11 minutes);
@@ -2388,7 +2441,7 @@ contract SherwoodV2Test is Test, Deployers {
         emit log_named_uint("leader loss on 13 players, callback gas", gasUsed);
         assertTrue(ok);
         assertLt(gasUsed, hook.FLIP_CALLBACK_GAS());
-        assertEq(hook.reignHolder(0), address(1)); // #1 unknown until the next rescan; settle() credits these seconds to the final #1
+        assertEq(hook.reignHolder(0), address(1)); // #1 unknown until the next play rescans and credits them back to here
         assertEq(hook.points(0, alice), 50);
         assertEq(hook.points(0, bob), 52);
     }

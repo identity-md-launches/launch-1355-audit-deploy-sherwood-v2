@@ -24,23 +24,21 @@ rules or to the pot split. The changes below are the fixes for the imported audi
 |---|---|
 | High `490703de…` Dice callback runs out of gas when #1 loses a flip | Reproduced and fixed (change 1). The proof test `test_leaderLostFlipCallbackMustFitDiceGasLimit` fails before and passes after. Measured with cold storage under the 200k limit: leader loss on 202 players 109,458 gas (deferred), on 13 players 89,558 (deferred), on 12 players 163,526 (rescanned), non-leader loss 76,324, win taking #1 79,214. `FLIP_CALLBACK_GAS` stays at 200,000, the provider's default, so no reliance on Dice honouring larger limits. |
 | Low `3e2286a2…` a shield is consumed by a reflect that pays nothing | Reproduced and fixed (change 2). |
-| Info `4ccb2af0…` 444 bytes of runtime margin | Taken into account: after the fixes `forge build --sizes` reports `SherwoodV2` at 24,383 bytes of runtime, 193 bytes under the EIP-170 limit; the launcher init code is 26,158 bytes plus 256 bytes of arguments, under the harness's 49,152 limit. The launcher's CREATE2 therefore still succeeds. |
-| Info `8e069730…` a debit of the cached leader rescans up to 1,500 players inside the swap | Accepted design, unchanged, as the finding says. The fix for the high finding does not move this rescan into the Dice callback. For the frontend: a move that debits #1 (a Steal of #1, a Robin Hood, a reflect paid by #1, a sell by #1, an expired flip of #1) costs about 4.2k gas per player of the round with cold storage, up to about 6.3M gas at 1,500 players. |
+| Info `4ccb2af0…` 444 bytes of runtime margin | Taken into account at every revision; current sizes are under "Revision 2: Bytecode" below. The launcher's CREATE2 still succeeds. |
+| Info `8e069730…` a debit of the cached leader rescans up to 1,500 players inside the swap | Accepted design, unchanged up to 1,500 players. The fix for the high finding does not move this rescan into the Dice callback. For the frontend: a move that debits #1 (a Steal of #1, a Robin Hood, a reflect paid by #1, a sell by #1, an expired flip of #1) costs about 4.7k gas per player of the round with cold storage (measured), about 7.1M gas at 1,500 players. Above 1,500 see revision 2. |
 
 ## Behaviour note on the high fix
 
-Between a Dice reveal that costs #1 the lead on a board of more than 12 players and the next play,
-sell or flip expiry of that round, no player's King of the Hill clock runs. The old #1 is credited up to
-the reveal, the new #1 from the next transaction. In an active round that gap is seconds; a reveal in a
-quiet round costs the new #1 the quiet time. The alternative, rescanning in the callback, is exactly
-what Dice's gas limit forbids; the alternative of crediting the cached leader optimistically could award
-reign time to the wrong player. Nothing else about reign tracking changed: a win, a non-leader loss and
-every path outside the callback behave as before.
+Between a Dice reveal that costs #1 the lead on a board of more than 12 players and the next play, sell or
+flip expiry of that round, #1 is unknown. The old #1 is credited up to the reveal; the next transaction
+rescans the board and (revision 2) credits the new #1 back to the reveal, since nothing changed in between.
+Rescanning in the callback is exactly what Dice's gas limit forbids. Nothing else about reign tracking
+changed for boards of up to 1,500 players.
 
 ## Checks run
 
 - `forge build` (solc 0.8.26, via IR, cancun, `bytecode_hash = "none"`), `forge build --sizes`.
-- `forge test --no-match-contract Fork`: 207 tests pass (205 of the project plus the proof's 2 in `test/scratch`, which is not submitted).
+- `forge test --no-match-contract Fork`: see the counts under each revision.
 - `forge test --match-contract Fork` against the public Robinhood Chain RPC: the launcher rehearsal
   `test/SherwoodV2LauncherFork.t.sol` deploys the launcher with the launch's arguments, then does the
   owner setup, a play, settlement and both burns (see the run notes at the end of this file).
@@ -78,19 +76,86 @@ The focus areas in the brief were read against the code and the tests; nothing e
   `script/SetupSherwoodV2.s.sol`: create the ETH/$IMD game pool, `setOperator`, `setBuybackPool`
   (the ETH/$IMD 1% pool) and `setHostBuybackPool` (the $PFWA holder pool).
 
-## Revision: King of the Hill on boards above MAX_LEADER_SCAN (finding 5643a8ad, high)
+## Revision 1: King of the Hill on boards above MAX_LEADER_SCAN (finding 5643a8ad, high)
 
-- `src/SherwoodV2.sol`: when the cached leader is stale and the round has more than `MAX_LEADER_SCAN`
-  players, `_currentLeader` now returns the marker `UNKNOWN_REIGN` (address(1)) instead of the stale
-  cache. The reign goes to that marker, so no real player collects seconds at #1 off a wrong cache.
-  The Dice callback's deferred rescan uses the same marker; before, it closed the reign to nobody.
-  When settlement finishes, `_crownUnknownReign` adds the marker's seconds to the round's final #1
-  (top[0]) and makes that player King if the total out-reigns the current King. Robin Hood does
-  nothing while #1 is unknown. It used to target the stale cache, and it spends no charge in this case.
-  Swap gas stays bounded: no new scans were added.
-- Tests: `test/SherwoodV2LargeBoardKing.t.sol` is the reviewer's proof, with 1,501 players. The two
-  callback-deferral tests in `test/SherwoodV2.t.sol` now expect `reignHolder == address(1)` rather
-  than `address(0)`.
-- Runtime size after the change: 24,534 B, a 42 B margin under EIP-170. The advisory low and info
-  findings from this review are left unchanged (see `.imd-responses.json`). Fixing them would need
-  more bytecode than this margin allows: the referrer-decode fix alone pushed the hook over the limit.
+Superseded by revision 2 below. It made `_currentLeader` return the marker `UNKNOWN_REIGN` (address(1))
+on a stale board of more than `MAX_LEADER_SCAN` players, parked the reign on the marker and, at the end of
+settlement, handed the marker's seconds to the round's final #1. The reviewer showed that this only moved
+the misallocation (finding de3202be): the final #1 collected every second since the first debit of #1.
+
+## Revision 2: the rescan resumes across transactions (finding de3202be, high)
+
+### Change
+
+`src/SherwoodV2.sol`, leader tracking (`_debit`, `_currentLeader`, new `_resumeScan` and `_scan`, `_setReign`,
+`settle`; `_crownUnknownReign` removed; new storage `_scanCursor`; new constants `LEADER_SCAN_CHUNK` = 200 and
+`LEADER_SCAN_RESERVE` = 1M gas):
+
+- Up to `MAX_LEADER_SCAN` (1,500) players nothing changed: the move that debits #1 rescans the whole board.
+- On a bigger board the move leaves #1 unknown (`UNKNOWN_REIGN`), as before, but now every following play,
+  sell and flip expiry calls `_resumeScan` first, before it changes any points. It rescans from the saved
+  cursor over at least `LEADER_SCAN_CHUNK` players and then as far as the transaction's gas allows while
+  keeping `LEADER_SCAN_RESERVE` for the rest of the swap. If the board is done, `_leaderStale` is cleared
+  and `_setReign` installs the #1 found; if not, the cursor is saved and #1 stays unknown. Comparisons run
+  against the cache, which `_credit` keeps at the best seen so far; a debit of that player resets the
+  cursor, so the rescan can never settle on a player who lost points mid-way.
+- `_setReign`: while #1 is unknown every point change restarts the unknown spell (`since` moves to now). When
+  a rescan resolves it, nothing has changed since `since`, so the #1 found has held #1 for the whole spell
+  and is credited from `since`. Seconds nobody is credited for go to nobody: the marker never accumulates
+  seconds, `settle` ignores it, and `kingReign` now always equals `reignOf(round, king)`.
+- The Dice callback is unchanged (it never rescans more than 12 players), but the next transaction now
+  credits the new #1 back to the reveal instead of starting their clock from itself.
+- Robin Hood while #1 is unknown still scores as a Buy and keeps its charge, but the unknown spell now lasts
+  until the next transaction with gas to spare, or a handful of plays (8 at 200 a play for 1,501 players),
+  not the rest of the round.
+
+Why: the proof `Proof_de3202be6be8.t.sol` fails on the previous code (dave, #1 for the last hour, was crowned
+with 19 hours; bob, #1 for 18 hours, got nothing) and passes now (bob is King with exactly 18 hours).
+
+### Bytecode
+
+The change needed about 550 B. Nineteen public constants that nothing outside the contract reads (`FEE_BPS`,
+`MIN_BUY`, `POINT_UNIT`, `MAX_POINTS_PER_BUY`, `HOLDER_BONUS_BPS`, `REFERRAL_POINTS_BPS`, `WELCOME_BONUS_BPS`,
+`RECENT`, `CLAIM_WINDOW`, `FLIP_TIMEOUT`, `MAX_DICE_FEE`, `SHIELD_CHARGE_ETH`, `SHIELD_DURATION`, the six
+`*_RECHARGE` / `*_MAX_CHARGES`) became `internal`, as the reviewer suggested; their values are in the README.
+Every constant a test, script or proof reads stays public. `forge build --sizes`: `SherwoodV2` runtime
+24,549 B, 27 B under EIP-170; launcher init code 26,324 B plus 256 B of arguments, under the harness's 49,152.
+
+### Advisory findings fixed with the freed room
+
+| Finding | Change | Test |
+|---|---|---|
+| Low `7e27cd8e` dirty referrer word reverts the first swap | `_play` decodes the second word as `uint256` and takes it as the referrer only if it fits an address; otherwise no referrer. | `test_dirtyReferrerWordIsIgnoredNotAReasonToRevert` |
+| Low `a5625232` a flip's Dice fee bounded only by `MAX_DICE_FEE` | `_requestFlip` also requires `diceFee <= ethIn * FEE_BPS / 10_000`, else the move scores as a Buy (no charge spent). No effect at today's fee: 0.000025 ETH is under the 0.00005 ETH a minimum buy pays in. | `test_flipScoresAsBuyWhenDiceFeeExceedsTheBuysPotShare` |
+| Low `af004953` `settle(round, type(uint256).max)` overflows | The batch end is clamped before the addition. | `test_settleAllRemainingWithMax` |
+| Low `404b46d7` `fundPot` for an unreachable round strands ETH | `fundPot` rejects rounds more than `MAX_SEED_AHEAD` (365) ahead with `RoundPassed`. | `test_fundPotRejectsRoundsTooFarAhead` |
+
+Left as they are: the set-once buyback pools without an initialisation check (owner trust; the setup script
+uses the known keys; the check needs `StateLibrary`, more than the remaining 27 B), the buyback events
+emitting the requested amount, the documented trust assumptions, and the charge spent on a zero-point
+target, which the README now documents.
+
+### Tests
+
+- `test/SherwoodV2UnknownReignKing.t.sol`: the reviewer's proof, with assertions that the King's reign
+  equals `reignOf`, dave got his hour and alice hers.
+- `test/SherwoodV2LargeBoardKing.t.sol`: the previous proof plus four tests on a 1,501-player board: the
+  rescan resumes in chunks under a 1.5M gas budget and completes on the eighth play, crediting the new #1
+  from the last point change; a play with gas to spare finishes it in one go (7.48M gas, cold) and credits
+  back to the debit; Robin Hood keeps its charge while #1 is unknown and works again after; a debit of the
+  best player found so far restarts the rescan.
+- `test/SherwoodV2.t.sol`: `test_leaderLostFlipCallbackFitsDiceGasLimitOnABigBoard` now expects the new #1
+  credited back to the reveal (70 s, not 10); the four low-finding tests above.
+
+### Gas, for the frontend
+
+A plain buy costs about 340k. The move that debits #1 on a board of up to 1,500 players pays the rescan,
+about 4.7k gas per player (7.1M at 1,500). On a bigger board the move pays nothing extra; each following
+play pays about 950k for its 200-player chunk until the board is done, and a wallet that lets the swap
+have more gas resolves it faster (a single 30M-gas play clears 1,501 players).
+
+### Checks run
+
+- `forge build --sizes` (27 B margin, see above); `forge test`: 228 tests pass, 215 of the project, 3 from
+  the two proofs copied to `test/scratch` (not submitted) and 10 in the fork suites against the public
+  Robinhood Chain RPC (`SherwoodV2LauncherFork`, `SherwoodV2Fork`, `SherwoodFork`).
