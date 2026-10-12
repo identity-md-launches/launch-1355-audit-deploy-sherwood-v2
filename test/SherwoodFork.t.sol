@@ -42,7 +42,12 @@ contract SherwoodForkTest is Test {
     address player = makeAddr("player");
 
     function setUp() public {
-        vm.createSelectFork("robinhood");
+        string memory rpc = vm.envOr("SHERWOOD_FORK_RPC_URL", string(""));
+        if (bytes(rpc).length == 0) {
+            vm.skip(true);
+            return;
+        }
+        vm.createSelectFork(rpc);
         swapRouter = new PoolSwapTest(MANAGER);
         lpRouter = new PoolModifyLiquidityTest(MANAGER);
 
@@ -91,7 +96,9 @@ contract SherwoodForkTest is Test {
         vm.prank(player, player);
         swapRouter.swap{value: amount}(
             gameKey,
-            SwapParams({zeroForOne: true, amountSpecified: -int256(amount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1}),
+            SwapParams({
+                zeroForOne: true, amountSpecified: -int256(amount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             abi.encode(uint256(move))
         );
