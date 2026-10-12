@@ -122,8 +122,8 @@ MIT
   | Flip | 1 every 6h40m (3 a round) | 6 |
 
   Banks are kept per wallet and carry across rounds. A new wallet starts with a full bank. A move with no charge left plays as a Buy.
-- **Shield:** every 0.025 ETH played in a round earns one charge, and a player holds at most one. Playing Shield raises a 30-minute shield. The next Steal or Robin Hood aimed at the shielded player is reflected, and the attacker pays.
-- **King of the Hill:** the player who held #1 for the longest in a round wins 8%.
+- **Shield:** every 0.025 ETH played in a round earns one charge, and a player holds at most one. Playing Shield raises a 30-minute shield. The next Steal or Robin Hood aimed at the shielded player is reflected, and the attacker pays the whole cut the move would have taken, below zero if need be (like a lost flip). A move that would have taken nothing reflects nothing and leaves the shield up.
+- **King of the Hill:** the player who held #1 for the longest in a round wins 8%. When #1 loses a flip, Dice's reveal only has `FLIP_CALLBACK_GAS` (200k), so on a board of more than 12 players it closes the reign there and the next play, sell or flip expiry rescans the board and starts the new reign; nobody's clock runs in between.
 - **Split:**
 
   | Share | Goes to |
@@ -143,6 +143,8 @@ MIT
 A v4 hook needs its permission flags (`0x20CC`) in the low bits of its address. [`src/SherwoodV2Launcher.sol`](src/SherwoodV2Launcher.sol) is for factories that can't pass a CREATE2 salt. In its constructor it searches salts onchain and deploys the hook with CREATE2. That takes about 16k tries on average, and the whole deploy costs about 10M gas. Read the result from `launcher.hook()`.
 
 [`test/SherwoodV2LauncherFork.t.sol`](test/SherwoodV2LauncherFork.t.sol) rehearses the whole $IMD launch on a Robinhood Chain fork: deploy, owner setup, a play, settlement and both burns.
+
+The changes made for the $IMD launch, and the audit findings behind them, are listed in [ADAPTATION.md](ADAPTATION.md).
 
 ### Owner setup after deploy
 

@@ -93,6 +93,9 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
     uint32 public constant FLIP_CALLBACK_GAS = 200_000;
     uint256 public constant MAX_DICE_FEE = 0.0005 ether; // 20x Dice's fee at launch; above it a flip scores as a buy
     uint256 internal constant MAX_LEADER_SCAN = 1500; // bound on the leader rescan inside a swap
+    // Bound on the leader rescan inside the Dice callback, which only has FLIP_CALLBACK_GAS: about
+    // 4.4k gas per player with cold storage on top of the ~110k a lost flip by #1 costs.
+    uint256 internal constant MAX_CALLBACK_SCAN = 12;
     address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     /// @notice Length of every round. Round `r` runs from roundStart(r) to roundEnd(r).
@@ -288,7 +291,9 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
     /// @notice A SHIELD move spent a charge: `player` is shielded until `until`.
     event ShieldArmed(uint256 indexed round, address indexed player, uint256 until);
     /// @notice A Steal or Robin Hood hit a shield: `attacker` paid `points` to `defender` and the shield broke.
-    event Reflected(uint256 indexed round, address indexed attacker, address indexed defender, uint256 points, Move move);
+    event Reflected(
+        uint256 indexed round, address indexed attacker, address indexed defender, uint256 points, Move move
+    );
     /// @notice #1 changed hands (`newHolder` 0 = nobody above zero); the new reign counts from `at`.
     event ReignChanged(uint256 indexed round, address indexed newHolder, uint256 at);
 
@@ -594,16 +599,14 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
         return (clock > full ? clock : full) + recharge;
     }
 
-    /// A Steal or Robin Hood that hit a shield: the attacker pays `amount` (what the move would have
-    /// taken, capped at the attacker's points above zero) to the defender, and the shield breaks.
+    /// A Steal or Robin Hood that hit a shield: the attacker pays `amount` (all of what the move would
+    /// have taken, so it can take them below zero like a lost flip) to the defender, and the shield
+    /// breaks. A move that would have taken nothing reflects nothing and leaves the shield up.
     function _reflect(uint256 round, address attacker, address defender, uint256 amount, Move move) internal {
-        uint256 cap = _positive(round, attacker);
-        if (amount > cap) amount = cap;
+        if (amount == 0) return;
         delete shieldUntil[defender];
-        if (amount > 0) {
-            _debit(round, attacker, amount);
-            _credit(round, defender, amount);
-        }
+        _debit(round, attacker, amount);
+        _credit(round, defender, amount);
         emit Reflected(round, attacker, defender, amount, move);
     }
 
@@ -691,7 +694,12 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
         uint256 amount = won ? f.win : f.stake;
         if (!won) _debit(f.round, f.player, f.stake); // can go below zero
         if (paidTo != address(0)) _credit(f.round, paidTo, amount);
-        _updateReign(f.round);
+        // A loss by #1 leaves the cached leader stale. Rescanning a board bigger than
+        // MAX_CALLBACK_SCAN here would run past FLIP_CALLBACK_GAS (Dice then drops the reveal), so
+        // the current reign is closed now and the leader stays stale: the next play, expiry or
+        // sell rescans with its caller's gas and starts the new reign from then.
+        if (_leaderStale[f.round] && _players[f.round].length > MAX_CALLBACK_SCAN) _setReign(f.round, address(0));
+        else _updateReign(f.round);
         emit FlipResolved(sequence, f.player, won, paidTo, amount);
     }
 
@@ -752,7 +760,11 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
     /// holder's reign (up to the round's end at most) and starts the new one. Point changes inside
     /// one transaction all share a timestamp, so checking once at the end counts the same seconds.
     function _updateReign(uint256 round) internal {
-        address leader = _currentLeader(round);
+        _setReign(round, _currentLeader(round));
+    }
+
+    /// Makes `leader` the reign holder (0 = nobody), closing the previous holder's reign.
+    function _setReign(uint256 round, address leader) internal {
         if (leader != address(0) && points[round][leader] <= 0) leader = address(0); // #1 must be above zero
         Reign storage g = _reign[round];
         address holder = g.holder;
@@ -986,7 +998,11 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
         (bool isHost, uint256 amount, uint256 minOut) = abi.decode(data, (bool, uint256, uint256));
         PoolKey memory key = isHost ? hostBuybackPool : buybackPool;
         BalanceDelta delta = poolManager.swap(
-            key, SwapParams({zeroForOne: true, amountSpecified: -int256(amount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1}), ""
+            key,
+            SwapParams({
+                zeroForOne: true, amountSpecified: -int256(amount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            ""
         );
         uint256 ethPaid = uint256(int256(-delta.amount0()));
         uint256 out = uint256(int256(delta.amount1()));
