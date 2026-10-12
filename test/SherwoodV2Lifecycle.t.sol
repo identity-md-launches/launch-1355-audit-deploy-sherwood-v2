@@ -54,25 +54,37 @@ contract SherwoodV2LifecycleTest is SherwoodV2Fixture {
         assertGt(gameToken.balanceOf(alice), 0);
     }
 
-    function test_diceFeeAtCapNeedsEnoughPotAndOneWeiAboveCapFallsBack() public {
-        dice.configure(uint128(game.MAX_DICE_FEE()), 0);
-        _buy(alice, 0.001 ether, SherwoodV2.Move.FLIP); // insufficient pot
-        assertEq(game.points(0, alice), 1);
-        assertEq(game.flipsLeft(alice), 6);
-        assertEq(dice.nextSequence(), 1);
-        _seed(0, 1 ether);
+    /// Revision 2 added a second bound: the Dice fee may not exceed the 5% the flip's own buy pays in.
+    /// Since that 5% is in the pot before the move runs, a pot short of the fee is no longer reachable.
+    function test_diceFeeAtCapNeedsABuyWhoseShareCoversItAndOneWeiAboveCapFallsBack() public {
+        dice.configure(uint128(MAX_DICE_FEE), 0);
+        _seed(0, 1 ether); // a full pot does not help: the bound is on the buy's own share
+        _buy(alice, 0.001 ether, SherwoodV2.Move.FLIP); // pays 0.00005 in, below the 0.0005 fee
+        assertEq(game.points(0, alice), 1, "scores as a plain buy");
+        assertEq(game.flipsLeft(alice), 6, "no flip charge spent");
+        assertEq(dice.nextSequence(), 1, "nothing was requested");
         uint256 potBefore = game.pot(0);
-        _buy(alice, 0.001 ether, SherwoodV2.Move.FLIP);
-        assertEq(game.points(0, alice), 1);
+        _buy(alice, 0.01 ether, SherwoodV2.Move.FLIP); // pays exactly the fee in: the boundary flips
+        assertEq(game.points(0, alice), 1, "the stake rides on the flip");
         assertEq(game.flipsLeft(alice), 5);
         assertEq(game.pendingFlips(0), 1);
-        assertEq(game.pot(0), potBefore + 0.00005 ether - game.MAX_DICE_FEE());
-        assertEq(address(dice).balance, game.MAX_DICE_FEE());
-        dice.configure(uint128(game.MAX_DICE_FEE() + 1), 0);
-        _buy(alice, 0.001 ether, SherwoodV2.Move.FLIP);
-        assertEq(game.points(0, alice), 2);
+        assertEq(game.pot(0), potBefore + 0.0005 ether - MAX_DICE_FEE);
+        assertEq(address(dice).balance, MAX_DICE_FEE);
+        dice.configure(uint128(MAX_DICE_FEE + 1), 0);
+        _buy(alice, 0.01 ether, SherwoodV2.Move.FLIP); // one wei over the cap, though the buy could pay it
+        assertEq(game.points(0, alice), 11);
         assertEq(game.flipsLeft(alice), 5);
         assertEq(dice.nextSequence(), 2);
+        // Fee one wei above the buy's share, well under the cap: the same fallback.
+        dice.configure(uint128(0.00005 ether + 1), 0);
+        _buy(bob, 0.001 ether, SherwoodV2.Move.FLIP);
+        assertEq(game.points(0, bob), 1);
+        assertEq(game.flipsLeft(bob), 6);
+        assertEq(dice.nextSequence(), 2);
+        dice.configure(uint128(0.00005 ether), 0);
+        _buy(bob, 0.001 ether, SherwoodV2.Move.FLIP);
+        assertEq(game.flipsLeft(bob), 5);
+        assertEq(dice.nextSequence(), 3);
     }
 
     function test_multipleFlipsResolveOutOfOrderAgainstSavedPreviousPlayers() public {
@@ -87,7 +99,7 @@ contract SherwoodV2LifecycleTest is SherwoodV2Fixture {
         assertEq(game.points(0, alice), -20);
         assertEq(game.points(0, bob), 155);
         assertEq(game.points(0, carol), 30);
-        vm.warp(vm.getBlockTimestamp() + game.FLIP_TIMEOUT() - 1);
+        vm.warp(vm.getBlockTimestamp() + FLIP_TIMEOUT - 1);
         vm.expectRevert(SherwoodV2.FlipNotExpired.selector);
         game.expireFlip(2);
         vm.warp(vm.getBlockTimestamp() + 1);
@@ -111,7 +123,7 @@ contract SherwoodV2LifecycleTest is SherwoodV2Fixture {
         _buy(alice, 0.02 ether, SherwoodV2.Move.FLIP);
         uint256 fee = dice.fee();
         uint256 potBefore = game.pot(0);
-        vm.warp(vm.getBlockTimestamp() + game.FLIP_TIMEOUT());
+        vm.warp(vm.getBlockTimestamp() + FLIP_TIMEOUT);
         game.expireFlip(1);
         assertEq(game.pot(0), potBefore);
         assertEq(game.points(0, alice), 20);

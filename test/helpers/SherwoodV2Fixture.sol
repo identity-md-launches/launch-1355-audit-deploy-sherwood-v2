@@ -93,6 +93,12 @@ abstract contract SherwoodV2Fixture is Test {
     uint160 internal constant PRICE_ONE = 79228162514264337593543950336;
     uint256 internal constant HOST_MIN = 100_000e18;
     address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    // Game constants the hook keeps internal (its revision 2 made them so to fit under EIP-170); the
+    // README documents the values. Pinned here so a silent change in the hook fails these tests.
+    uint256 internal constant MIN_BUY = 0.001 ether;
+    uint256 internal constant MAX_DICE_FEE = 0.0005 ether;
+    uint256 internal constant FLIP_TIMEOUT = 10 minutes;
+    uint256 internal constant CLAIM_WINDOW = 7 days;
     address internal owner;
     address internal alice;
     address internal bob;

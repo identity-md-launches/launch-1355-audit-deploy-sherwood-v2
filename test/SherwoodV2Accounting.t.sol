@@ -28,7 +28,7 @@ contract SherwoodV2AccountingTest is SherwoodV2Fixture {
         assertEq(game.pot(0), fee);
         assertEq(address(manager).balance - poolBefore + fee, amount);
         assertEq(uint256(int256(delta.amount1())), gameToken.balanceOf(alice));
-        assertEq(game.bought(0, alice), amount >= game.MIN_BUY() ? gameToken.balanceOf(alice) : 0);
+        assertEq(game.bought(0, alice), amount >= MIN_BUY ? gameToken.balanceOf(alice) : 0);
     }
 
     /// forge-config: default.fuzz.runs = 1000

@@ -27,7 +27,8 @@ pool liquidity, and the launcher's gas at the eventual factory address still nee
   code sizes, and separation between factory and owner. It does not assume deployment fits a
   universal 10M gas ceiling: salt-search cost depends on the factory address and init code.
 
-Each stateless fuzz property runs 1,000 examples using inline Foundry configuration.
+Each stateless fuzz property runs 1,000 examples using inline Foundry configuration, except the
+big-board rescan property, which builds 1,501 players per example and runs 6.
 
 ## Stateful properties
 
@@ -56,32 +57,48 @@ referrals, both burn paths, expiry, reveal, refund, selling and sweeping are rea
 is modeled; forced ETH transfers are outside this exact-liability equality. Refund eligibility is
 controlled by the local Dice transport, not a claim about the live provider's refund delay.
 
-## Revision: the UNKNOWN_REIGN marker (finding 5643a8ad)
+## Revision 2: the resumable rescan (finding de3202be)
 
-The large-board King finding from the previous round was fixed by parking the reign on `address(1)`
-whenever the cached leader of a round with more than 1,500 players is debited, and crediting the
-marker's seconds to the round's final #1 at settlement. `SherwoodV2UnknownReign.t.sol` covers that
-revision on real 1,501-player boards and on a 13-player board for the deferred Dice rescan:
+The implementation's revision 2 replaced the marker-at-settlement rule with a rescan that resumes
+across transactions: once #1 is unknown (a debit of the cached #1 on a board above 1,500 players, or a
+lost flip by #1 on a board above 12), every play, sell and flip expiry first rescans at least 200
+players, as many more as its gas allows, and credits the #1 it finds back to the start of the open
+spell, which every point change restarts. Nineteen constants became `internal` to fit the change
+under EIP-170; the fixture and handler pin their README values as literals, so a silent change fails
+the suite. `SherwoodV2UnknownReign.t.sol` was rewritten for this design and covers what the
+implementation's own tests (`SherwoodV2LargeBoardKing.t.sol`, play-driven chunks) do not:
 
-- the marker takes the reign on the first debit of the cached leader, no real player accumulates
-  seconds off the stale cache, the cache keeps moving to credited players, and the marker's running
-  reign is capped at the round's end with no overlap;
-- the marker's seconds crown the final #1 only on the settlement batch that reaches the end of the
-  board, a longer real reign still beats them, a round with nobody above zero gets no prize, and
-  `address(1)` can never claim anything;
-- Robin Hood while #1 is unknown scores the buy, moves nothing and spends no charge (by the player and
-  by the stale cached leader), while a 1,500-player board is still rescanned in place;
-- a lost flip by #1 on 13 players defers the rescan to the marker, the next play rescans, an expired
-  flip leaves no marker, and the marker does not leak into the next round.
+- a debit of #1 on a 1,501-player board leaves #1 unknown, the debited player keeps exactly the
+  seconds held, the marker never banks seconds and never wins a slot, and the next play with gas to
+  spare credits the new #1 back to the debit with no overlap and no gap;
+- the two other resume entry points: a sell by a scored player rescans before its own wipe (and a
+  tight-budget sell only covers one chunk), a flip expiry rescans before it credits the stake, and a
+  sell by a player with no points neither resumes nor restarts the spell;
+- a Dice loss by the running best mid-rescan (through the 200k callback, cold storage) resets the
+  cursor: the board needs eight more chunks, and the new #1 is credited from the last point change;
+- across repeated unknown spells every second of the round is credited exactly once and the King is
+  the longest observed at #1, with `kingReign == reignOf(king)`;
+- a fuzzed property (six 1,501-player boards with contenders at random sizes and random gas budgets
+  between one chunk and the whole board) checks that the completed rescan always lands on the player
+  with the most points;
+- the deferred Dice rescan on 13 players resolved by a sell, credited back to the reveal; an expired
+  flip of #1 leaves no marker; an open spell does not leak into the next round; a 1,500-player board
+  is still rescanned inside the debiting swap.
 
 Times in that file are derived from `GENESIS`, never from a cached `block.timestamp`: under via-IR
 the compiler re-reads the opcode at each use, so a cached value moves with every `vm.warp`.
+`SherwoodV2Lifecycle.t.sol`'s Dice-fee test now drives the new per-buy fee bound at its boundary
+(fee equal to the buy's 5% flips, one wei more scores as a buy); the pot-short branch it used to
+reach is unreachable since that bound.
 
 ## Reported, not asserted
 
-The marker credits every unknown second to whoever is #1 at the end, so on a big board a player who
-takes #1 in the last minutes is crowned King over the player who actually held #1 for most of the
-round. The failing proof (1,501 players, 18 hours versus 1 hour) and three smaller findings (Robin
-Hood silently disabled for the rest of a big round, `settle` with `type(uint256).max` panicking after
-a partial batch, and views that exclude the marker's seconds) are in `.imd-findings.json`. The
-six-actor invariant campaign never reaches the big-board branch. Production code was not modified.
+When a round ends while #1 is unknown, `settle` drops the whole final spell: it does not credit the
+`top[0]` it has just computed, although no points changed after the spell began. On a 13-player board
+where #1's lost flip is the last point change, the player who held #1 for the remaining 19 hours gets
+no reign and the previous #1 is crowned King for one hour. The proof (fails now, passes with a
+one-block fix in `settle` that was verified locally and reverted) is in `.imd-findings.json`, with
+three smaller notes: every restart on a big board costs the eventual #1 the seconds since the previous
+restart (documented design), `reignOf(round, address(1))` shows the open spell, and the
+`pot < diceFee` branch is now dead. The six-actor invariant campaign never reaches the big-board or
+the 13-player-callback branch. Production code was not modified.

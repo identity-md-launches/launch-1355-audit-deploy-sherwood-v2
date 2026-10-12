@@ -25,6 +25,9 @@ contract SherwoodV2Handler is Test {
     address public immutable owner;
     address[6] public actors;
     uint256 public constant MAX_ROUND = 32;
+    // Internal game constants (README values); pinned so a silent change in the hook fails the campaign.
+    uint256 internal constant MIN_BUY = 0.001 ether;
+    uint256 internal constant FLIP_TIMEOUT = 10 minutes;
 
     // Independent ETH-flow ledger. No deal() ever touches the hook, manager, or Dice.
     uint256 public deposits;
@@ -84,7 +87,7 @@ contract SherwoodV2Handler is Test {
         assertEq(address(game).balance + dice.received() - paidDiceBefore, hookBefore + fee);
         uint256 receivedTokens = token.balanceOf(player) - beforeTokens;
         assertEq(int256(delta.amount1()), int256(receivedTokens));
-        assertEq(game.bought(round, player) - boughtBefore, amount >= game.MIN_BUY() ? receivedTokens : 0);
+        assertEq(game.bought(round, player) - boughtBefore, amount >= MIN_BUY ? receivedTokens : 0);
     }
 
     function sell(uint256 actorSeed, uint256 amountSeed) public {
@@ -155,7 +158,7 @@ contract SherwoodV2Handler is Test {
         (address player,,, uint64 requestedAt,,) = game.flips(seq);
         if (player == address(0)) return;
         if (expireInstead) {
-            if (block.timestamp < requestedAt + game.FLIP_TIMEOUT()) {
+            if (block.timestamp < requestedAt + FLIP_TIMEOUT) {
                 vm.expectRevert(SherwoodV2.FlipNotExpired.selector);
                 game.expireFlip(seq);
                 return;
