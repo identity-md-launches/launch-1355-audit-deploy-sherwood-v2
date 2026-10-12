@@ -2334,7 +2334,7 @@ contract SherwoodV2Test is Test, Deployers {
         assertEq(hook.pendingFlips(0), 0);
         // The reign was closed at the reveal: alice keeps the 60 seconds she really held #1 and nobody
         // is credited until the board is rescanned.
-        assertEq(hook.reignHolder(0), address(0));
+        assertEq(hook.reignHolder(0), address(1)); // #1 unknown until the next rescan; settle() credits these seconds to the final #1
         assertEq(hook.reignOf(0, alice), 60);
         // The next play rescans (bob is #1 with 52) and starts his reign from then.
         vm.warp(t0 + 120);
@@ -2388,7 +2388,7 @@ contract SherwoodV2Test is Test, Deployers {
         emit log_named_uint("leader loss on 13 players, callback gas", gasUsed);
         assertTrue(ok);
         assertLt(gasUsed, hook.FLIP_CALLBACK_GAS());
-        assertEq(hook.reignHolder(0), address(0));
+        assertEq(hook.reignHolder(0), address(1)); // #1 unknown until the next rescan; settle() credits these seconds to the final #1
         assertEq(hook.points(0, alice), 50);
         assertEq(hook.points(0, bob), 52);
     }

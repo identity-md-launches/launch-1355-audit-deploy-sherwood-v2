@@ -96,6 +96,9 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
     // Bound on the leader rescan inside the Dice callback, which only has FLIP_CALLBACK_GAS: about
     // 4.4k gas per player with cold storage on top of the ~110k a lost flip by #1 costs.
     uint256 internal constant MAX_CALLBACK_SCAN = 12;
+    // Reign holder while #1 is unknown (stale cache on a board too big to rescan). Its seconds go to
+    // the round's final #1 at settlement instead of to whoever the stale cache points at.
+    address internal constant UNKNOWN_REIGN = address(1);
     address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     /// @notice Length of every round. Round `r` runs from roundStart(r) to roundEnd(r).
@@ -530,7 +533,7 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
                 }
             } else if (move == Move.ROBIN_HOOD) {
                 address leader = _currentLeader(round);
-                if (leader != address(0) && leader != player) {
+                if (uint160(leader) > uint160(UNKNOWN_REIGN) && leader != player) {
                     target = _lowestRecent(round, leader);
                     if (target != address(0)) {
                         _robinClock[player] = _spend(_robinClock[player], ROBIN_RECHARGE, ROBIN_MAX_CHARGES);
@@ -698,7 +701,7 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
         // MAX_CALLBACK_SCAN here would run past FLIP_CALLBACK_GAS (Dice then drops the reveal), so
         // the current reign is closed now and the leader stays stale: the next play, expiry or
         // sell rescans with its caller's gas and starts the new reign from then.
-        if (_leaderStale[f.round] && _players[f.round].length > MAX_CALLBACK_SCAN) _setReign(f.round, address(0));
+        if (_leaderStale[f.round] && _players[f.round].length > MAX_CALLBACK_SCAN) _setReign(f.round, UNKNOWN_REIGN);
         else _updateReign(f.round);
         emit FlipResolved(sequence, f.player, won, paidTo, amount);
     }
@@ -746,7 +749,7 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
         if (!_leaderStale[round]) return _leader[round];
         address[] storage players = _players[round];
         uint256 n = players.length;
-        if (n > MAX_LEADER_SCAN) return _leader[round]; // too big to rescan inside a swap; keep the cached one
+        if (n > MAX_LEADER_SCAN) return UNKNOWN_REIGN; // too big to rescan inside a swap: #1 is unknown
         int256 best;
         for (uint256 i; i < n; ++i) {
             int256 p = points[round][players[i]];
@@ -765,7 +768,7 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
 
     /// Makes `leader` the reign holder (0 = nobody), closing the previous holder's reign.
     function _setReign(uint256 round, address leader) internal {
-        if (leader != address(0) && points[round][leader] <= 0) leader = address(0); // #1 must be above zero
+        if (leader != address(0) && leader != UNKNOWN_REIGN && points[round][leader] <= 0) leader = address(0); // #1 must be above zero
         Reign storage g = _reign[round];
         address holder = g.holder;
         if (leader == holder) return;
@@ -810,6 +813,15 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
 
     /// Whether `a` (with `sa` seconds at #1) is ahead of `b` (with `sb`) for King: more seconds,
     /// then more points; a full tie keeps `b`, the one found first. Nobody with 0 seconds qualifies.
+    /// Seconds when #1 was unknown count for the round's final #1.
+    function _crownUnknownReign(uint256 round, Result storage r) internal {
+        address first = r.top[0];
+        uint256 s = _reignSeconds[round][first] + _reignSeconds[round][UNKNOWN_REIGN];
+        if (first != address(0) && _outreigns(round, first, s, r.king, r.kingReign)) {
+            (r.king, r.kingReign) = (first, uint64(s));
+        }
+    }
+
     function _outreigns(uint256 round, address a, uint256 sa, address b, uint256 sb) internal view returns (bool) {
         return sa > sb || (sa == sb && sa > 0 && points[round][a] > points[round][b]);
     }
@@ -857,6 +869,7 @@ contract SherwoodV2 is IHooks, IUnlockCallback {
             }
         }
         (r.king, r.kingReign) = (king, uint64(kingReign));
+        if (end_ == players.length) _crownUnknownReign(round, r);
         r.cursor = uint64(end_);
         if (end_ < players.length) return false;
 

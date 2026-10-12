@@ -77,3 +77,20 @@ The focus areas in the brief were read against the code and the tests; nothing e
 - After deployment the owner (`0x420944b441715e34dd672ae0eb4526a7ad7d1eef`) runs the setup in
   `script/SetupSherwoodV2.s.sol`: create the ETH/$IMD game pool, `setOperator`, `setBuybackPool`
   (the ETH/$IMD 1% pool) and `setHostBuybackPool` (the $PFWA holder pool).
+
+## Revision: King of the Hill on boards above MAX_LEADER_SCAN (finding 5643a8ad, high)
+
+- `src/SherwoodV2.sol`: when the cached leader is stale and the round has more than `MAX_LEADER_SCAN`
+  players, `_currentLeader` now returns the marker `UNKNOWN_REIGN` (address(1)) instead of the stale
+  cache. The reign goes to that marker, so no real player collects seconds at #1 off a wrong cache.
+  The Dice callback's deferred rescan uses the same marker; before, it closed the reign to nobody.
+  When settlement finishes, `_crownUnknownReign` adds the marker's seconds to the round's final #1
+  (top[0]) and makes that player King if the total out-reigns the current King. Robin Hood does
+  nothing while #1 is unknown. It used to target the stale cache, and it spends no charge in this case.
+  Swap gas stays bounded: no new scans were added.
+- Tests: `test/SherwoodV2LargeBoardKing.t.sol` is the reviewer's proof, with 1,501 players. The two
+  callback-deferral tests in `test/SherwoodV2.t.sol` now expect `reignHolder == address(1)` rather
+  than `address(0)`.
+- Runtime size after the change: 24,534 B, a 42 B margin under EIP-170. The advisory low and info
+  findings from this review are left unchanged (see `.imd-responses.json`). Fixing them would need
+  more bytecode than this margin allows: the referrer-decode fix alone pushed the hook over the limit.
